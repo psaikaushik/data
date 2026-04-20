@@ -147,6 +147,7 @@ class _ParallelMapperIter(Iterator[T]):
         max_concurrent: Optional[int],
         snapshot_frequency: int,
         initial_state: Optional[Dict[str, Any]],
+        worker_init_fn: Optional[Callable[[int], None]] = None,
     ):
         self.source = source
         self.map_fn = map_fn
@@ -155,6 +156,7 @@ class _ParallelMapperIter(Iterator[T]):
         self.method = method
         self.mp_context = mp_context
         self.snapshot_frequency = snapshot_frequency
+        self.worker_init_fn = worker_init_fn
 
         self._in_q: Union[queue.Queue, mp.Queue] = queue.Queue() if method == "thread" else mp_context.Queue()
         self._intermed_q: Union[queue.Queue, mp.Queue] = queue.Queue() if method == "thread" else mp_context.Queue()
@@ -202,6 +204,7 @@ class _ParallelMapperIter(Iterator[T]):
                     self._intermed_q,
                     self.map_fn,
                     self._stop,
+                    self.worker_init_fn,
                 )
 
         elif self.method == "process":
@@ -213,6 +216,7 @@ class _ParallelMapperIter(Iterator[T]):
                     self._intermed_q,
                     self.map_fn,
                     self._mp_stop,
+                    self.worker_init_fn,
                 )
                 self._workers.append(mp_context.Process(target=_apply_udf, args=_args, daemon=True))
             for t in self._workers:
@@ -340,6 +344,7 @@ class _ParallelMapperImpl(BaseNode[T]):
         multiprocessing_context: Optional[str] = None,
         max_concurrent: Optional[int] = None,
         snapshot_frequency: int = 1,
+        worker_init_fn: Optional[Callable[[int], None]] = None,
     ):
         super().__init__()
         assert method in ["thread", "process"]
@@ -357,6 +362,7 @@ class _ParallelMapperImpl(BaseNode[T]):
             raise ValueError(f"{max_concurrent=} should be a positive integer!")
         self.max_concurrent = max_concurrent
         self.snapshot_frequency = snapshot_frequency
+        self.worker_init_fn = worker_init_fn
         self._it: Optional[Union[_InlineMapperIter[T], _ParallelMapperIter[T]]] = None
 
     def reset(self, initial_state: Optional[Dict[str, Any]] = None):
@@ -384,6 +390,7 @@ class _ParallelMapperImpl(BaseNode[T]):
             max_concurrent=self.max_concurrent,
             snapshot_frequency=self.snapshot_frequency,
             initial_state=initial_state,
+            worker_init_fn=self.worker_init_fn,
         )
 
     def next(self) -> T:
@@ -427,6 +434,10 @@ class ParallelMapper(BaseNode[T]):
         snapshot_frequency (int): The frequency at which to snapshot the state of the source node. Default is 1.
         prebatch (Optional[int]): Optionally perform pre-batching of items from source before mapping.
           For small items, this may improve throughput at the expense of peak memory.
+        worker_init_fn (Optional[Callable[[int], None]]): An optional callable that is invoked once per
+          worker at startup, receiving the worker id as its sole argument. Use this to set seeds,
+          configure logging, load credentials, or perform any other per-worker initialization.
+          Called before any items are processed. Has no effect when num_workers=0.
     """
 
     IT_STATE_KEY = "it_state"
@@ -442,6 +453,7 @@ class ParallelMapper(BaseNode[T]):
         max_concurrent: Optional[int] = None,
         snapshot_frequency: int = 1,
         prebatch: Optional[int] = None,
+        worker_init_fn: Optional[Callable[[int], None]] = None,
     ):
         super().__init__()
         assert method in ["thread", "process"]
@@ -454,6 +466,7 @@ class ParallelMapper(BaseNode[T]):
         self.max_concurrent = max_concurrent
         self.snapshot_frequency = snapshot_frequency
         self.prebatch = prebatch
+        self.worker_init_fn = worker_init_fn
         if prebatch is None:
             self.map_fn = map_fn
             self.source = source
@@ -472,6 +485,7 @@ class ParallelMapper(BaseNode[T]):
             multiprocessing_context=self.multiprocessing_context,
             max_concurrent=self.max_concurrent,
             snapshot_frequency=self.snapshot_frequency,
+            worker_init_fn=self.worker_init_fn,
         )
 
         if self.prebatch is None:

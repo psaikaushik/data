@@ -7,7 +7,7 @@
 import multiprocessing.synchronize as python_mp_synchronize
 import queue
 import threading
-from typing import Callable, Union
+from typing import Callable, Optional, Union
 
 import torch
 import torch.multiprocessing as mp
@@ -15,6 +15,7 @@ import torch.multiprocessing as mp
 from torch._utils import ExceptionWrapper
 
 from .constants import QUEUE_TIMEOUT
+from .exception_wrapper import StartupExceptionWrapper
 
 
 def _apply_udf(
@@ -23,6 +24,7 @@ def _apply_udf(
     out_q: Union[queue.Queue, mp.Queue],
     udf: Callable,
     stop_event: Union[threading.Event, python_mp_synchronize.Event],
+    worker_init_fn: Optional[Callable[[int], None]] = None,
 ):
     """_apply_udf assumes in_q emits tuples of (x, idx) where x is the
     payload, idx is the index of the result, potentially used for maintaining
@@ -31,6 +33,12 @@ def _apply_udf(
     StopIteration from in_q).
     """
     torch.set_num_threads(1)
+    if worker_init_fn is not None:
+        try:
+            worker_init_fn(worker_id)
+        except Exception:
+            out_q.put((StartupExceptionWrapper(where="in worker_init_fn"), 0), block=False)
+            return
     while True:
         if stop_event.is_set() and in_q.empty():
             break
